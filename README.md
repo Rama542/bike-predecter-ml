@@ -3,6 +3,13 @@
 > **Production-grade** AI-powered bike rental demand forecasting platform for Bangalore's mobility ecosystem.  
 > Built with SARIMA/SARIMAX on 17,379 real hourly records · Two role-based dashboards · Investor-ready.
 
+## 🌐 Live Demo
+
+**Frontend (Vercel):** https://frontend-nine-lyart-78.vercel.app
+
+> Sign up with any email → choose **Admin** (fleet operator) or **Consumer** (rider) role.  
+> Demo accounts: `admin@bikesense.ai` / `Admin@1234` · `rider@bikesense.ai` / `Rider@1234` (create via Sign Up first)
+
 ---
 
 ## 🎯 What Is BikeSense?
