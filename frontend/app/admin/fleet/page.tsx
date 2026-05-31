@@ -53,6 +53,14 @@ export default function FleetPage() {
 
   useEffect(() => { fetchFleet(); }, []);
 
+  // Reload when a new dataset finishes training
+  useEffect(() => {
+    const onTrained = () => { void fetchFleet(); };
+    window.addEventListener("ml-trained", onTrained);
+    return () => window.removeEventListener("ml-trained", onTrained);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const totals = fleetData.reduce(
     (a, z) => ({
       total:       a.total       + z.total,

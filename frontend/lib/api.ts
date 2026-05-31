@@ -186,6 +186,25 @@ export const getPriceTrend      = () => apiFetch<{ dt: string; price: number; de
 export const getHourlyPricing    = (area?: string) => apiFetch<HourlyPricePoint[]>(`${ML_API}/consumer/hourly-pricing${area ? `?area=${encodeURIComponent(area)}` : ""}`);
 export const getWeeklyDayForecast = () => apiFetch<WeeklyDayForecast[]>(`${ML_API}/consumer/weekly-forecast`);
 
+// ─── Dataset Upload ───────────────────────────────────────────────────────────
+// Routes through the Next.js proxy (/api/ml/*) which streams multipart bodies
+// directly via req.body — no buffering, no CORS issue.
+export async function uploadDataset(
+  file: File,
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    const res = await fetch(`/api/ml/admin/upload-dataset`, {
+      method: "POST",
+      body: formData,
+    });
+    return res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? "Could not reach the ML service." };
+  }
+}
+
 // ── Email Verification ─────────────────────────────────────────────────────────
 export interface SendVerificationResult {
   success: boolean;

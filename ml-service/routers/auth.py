@@ -17,6 +17,7 @@ import string
 import smtplib
 import logging
 import pathlib
+import tempfile
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
@@ -28,8 +29,8 @@ logger = logging.getLogger("bikesense.auth")
 
 # ── Persistent OTP Store (JSON file) ──────────────────────────────────────────
 # Survives uvicorn auto-reloads and server restarts.
-# Stored in /tmp so it's fast and auto-cleaned by the OS.
-_OTP_FILE = pathlib.Path("/tmp/bikesense_otp_store.json")
+# Uses tempfile.gettempdir() so this works on Linux (/tmp), macOS, and Windows.
+_OTP_FILE = pathlib.Path(tempfile.gettempdir()) / "bikesense_otp_store.json"
 
 def _load_otp_store() -> dict:
     """Load OTP store from disk, dropping any expired entries."""
@@ -221,8 +222,8 @@ async def verify_code(body: VerifyCodeRequest):
 
 
 # Server-side User Registry
-# Stored persistently in /tmp so it survives uvicorn reloads.
-_USER_FILE = pathlib.Path("/tmp/bikesense_user_registry.json")
+# Uses tempfile.gettempdir() for cross-platform compatibility.
+_USER_FILE = pathlib.Path(tempfile.gettempdir()) / "bikesense_user_registry.json"
 
 def _load_user_registry() -> dict:
     if not _USER_FILE.exists():

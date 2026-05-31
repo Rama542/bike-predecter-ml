@@ -9,10 +9,14 @@ router = APIRouter()
 async def get_system_status(request: Request):
     engine = request.app.state.engine
     last_trained = getattr(engine, "last_trained", None)
-    if last_trained:
-        # Return ISO string for easy parsing
-        return {"success": True, "last_trained": last_trained.isoformat()}
-    return {"success": False}
+    is_training  = getattr(engine, "is_training",  False)
+    train_error  = getattr(engine, "train_error",  None)
+    return {
+        "success":     True,
+        "is_training": is_training,
+        "last_trained": last_trained.isoformat() if last_trained else None,
+        "train_error": train_error,
+    }
 
 
 class MLConfigUpdate(BaseModel):
@@ -51,17 +55,52 @@ async def get_models(request: Request):
 async def upload_dataset(request: Request, file: UploadFile = File(...)):
     engine = request.app.state.engine
     from core.model_engine import DATA_PATH
-    import asyncio
+    import asyncio, io
+    import pandas as pd
     try:
-        # Read file content asynchronously and save to disk
         contents = await file.read()
         if not contents:
             return {"success": False, "error": "Uploaded file is empty."}
+
+        # ── Pre-validate the CSV before overwriting the live dataset ──────────
+        try:
+            df_check = pd.read_csv(io.BytesIO(contents))
+        except Exception as e:
+            return {"success": False, "error": f"Could not parse file as CSV: {e}"}
+
+        if len(df_check) < 48:
+            return {"success": False, "error": (
+                f"Dataset too small ({len(df_check)} rows). "
+                "Need at least 48 rows for SARIMA training."
+            )}
+
+        cols_lower = {c.lower() for c in df_check.columns}
+        has_cnt   = bool(cols_lower & {"cnt","count","rides","demand","total","num_rides",
+                                       "rentals","rented","rented_bikes","booked","usage","trips",
+                                       "bookings","hire","hires","bike_count","rental_count"})
+        has_date  = bool(cols_lower & {"dteday","date","ds","day","start_date"})
+        has_hour  = bool(cols_lower & {"hr","hour","hrs","hour_of_day","hour_num"})
+        # Accept any column name that looks like a full datetime / timestamp
+        has_dt    = bool(cols_lower & {"datetime","timestamp","ts","time","date_time",
+                                       "start_time","end_time","ride_time","trip_time",
+                                       "started_at","ended_at","created_at"})
+        if not has_cnt or (not has_dt and not (has_date and has_hour)):
+            return {"success": False, "error": (
+                f"CSV is missing required columns. Found: {list(df_check.columns)}. "
+                "Need: a datetime/timestamp column (or date+hour columns), "
+                "plus a demand column (cnt/count/rides/demand/trips/rentals/usage)."
+            )}
+
         with open(DATA_PATH, "wb") as buffer:
             buffer.write(contents)
-        # Retrain SARIMA models in a background thread (non-blocking)
-        # so the HTTP response returns immediately without timing out
-        loop = asyncio.get_event_loop()
+
+        # Clear any stale error from a previous failed training so polling
+        # doesn't immediately fire the error branch on the first tick.
+        engine.train_error = None
+        engine.is_training = False
+
+        # Retrain SARIMA models in background thread (non-blocking)
+        loop = asyncio.get_running_loop()
         loop.run_in_executor(None, engine.train)
         return {"success": True, "message": "Dataset uploaded! SARIMA models are retraining in the background."}
     except Exception as e:

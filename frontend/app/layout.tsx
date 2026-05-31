@@ -25,20 +25,20 @@ async function ClerkWrapper({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <ClerkWrapper>
-      <html lang="en" className="dark">
-        <head>
-          <link rel="preconnect" href="https://fonts.googleapis.com" />
-          <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-          <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-        </head>
-        <body className="font-body bg-dark-900 text-white antialiased">
+    <html lang="en" className="dark">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+      </head>
+      <body className="font-body bg-dark-900 text-white antialiased">
+        <ClerkWrapper>
           {children}
-          <Toaster position="top-right" toastOptions={{
-            style: { background: "#1e293b", color: "#f1f5f9", border: "1px solid rgba(99,102,241,0.3)" }
-          }} />
-        </body>
-      </html>
-    </ClerkWrapper>
+        </ClerkWrapper>
+        <Toaster position="top-right" toastOptions={{
+          style: { background: "#1e293b", color: "#f1f5f9", border: "1px solid rgba(99,102,241,0.3)" }
+        }} />
+      </body>
+    </html>
   );
 }

@@ -15,6 +15,7 @@ from pathlib import Path
 import pickle
 import logging
 import os
+import threading
 
 logger = logging.getLogger("bikesense.engine")
 
@@ -53,36 +54,154 @@ class ModelEngine:
             "event_multiplier": 1.50
         }
         self._fc_short = self._fc_med = self._fc_long = None
+        self.is_training = False
+        self.train_error: str | None = None
+        self._train_lock = threading.Lock()
 
     # ─── Data Preparation ────────────────────────────────────────────────────
     def _load_data(self):
         if not DATA_PATH.exists():
             self._generate_synthetic_data()
         df = pd.read_csv(DATA_PATH)
-        df["dteday"]   = pd.to_datetime(df["dteday"])
-        df["hr"]       = df["hr"].astype(int)
-        df["datetime"] = pd.to_datetime(df["datetime"])
+
+        # ── Column normalisation: accept common alternative names ─────────────
+        rename = {}
+        cols_lower = {c.lower(): c for c in df.columns}
+
+        # Full datetime / timestamp column (takes precedence over separate date+hour)
+        # Map all common timestamp-style column names to "datetime"
+        DATETIME_ALTS = (
+            "datetime","timestamp","ts","time","date_time",
+            "start_time","end_time","ride_time","trip_time",
+            "started_at","ended_at","created_at",
+        )
+        if "datetime" not in df.columns:
+            for alt in DATETIME_ALTS:
+                if alt in cols_lower and cols_lower[alt] not in rename:
+                    rename[cols_lower[alt]] = "datetime"
+                    break
+
+        # date-only column (used when there's no full datetime)
+        if "dteday" not in df.columns and "datetime" not in rename.values():
+            for alt in ("date", "Date", "DATE", "ds", "Ds", "day", "start_date"):
+                if alt in df.columns:
+                    rename[alt] = "dteday"
+                    break
+            if "dteday" not in rename.values():
+                for alt in ("dteday", "date", "ds", "day"):
+                    if alt in cols_lower and cols_lower[alt] not in rename:
+                        rename[cols_lower[alt]] = "dteday"
+                        break
+
+        # hour column
+        if "hr" not in df.columns:
+            for alt in ("hour", "Hour", "HOUR", "hrs", "hour_of_day", "hour_num"):
+                if alt in df.columns:
+                    rename[alt] = "hr"
+                    break
+            if "hr" not in rename.values():
+                for alt in ("hr", "hour", "hrs", "hour_of_day"):
+                    if alt in cols_lower and cols_lower[alt] not in rename:
+                        rename[cols_lower[alt]] = "hr"
+                        break
+
+        # demand / count column — accept many common names
+        if "cnt" not in df.columns:
+            for alt in ("count","Count","COUNT","rides","Rides","demand","Demand",
+                        "total","Total","total_rides","num_rides","rentals","Rentals",
+                        "rented","rented_bikes","booked","usage","trips","Trips",
+                        "bookings","hire","hires","bike_count","rental_count"):
+                if alt in df.columns:
+                    rename[alt] = "cnt"
+                    break
+            if "cnt" not in rename.values():
+                for alt in ("cnt","count","rides","demand","total","rented","booked",
+                            "usage","trips","bookings","hire","rental_count"):
+                    if alt in cols_lower and cols_lower[alt] not in rename:
+                        rename[cols_lower[alt]] = "cnt"
+                        break
+
+        if rename:
+            df = df.rename(columns=rename)
+
+        # Validate minimum columns — need cnt AND (datetime OR dteday+hr)
+        has_cnt  = "cnt" in df.columns
+        has_dt   = "datetime" in df.columns
+        has_date = any(c in df.columns for c in ("dteday", "date"))
+        has_hour = "hr" in df.columns
+        if not has_cnt or (not has_dt and not (has_date and has_hour)):
+            found = list(df.columns)
+            raise ValueError(
+                f"CSV is missing required columns. Found: {found}. "
+                f"Need: a datetime/timestamp column (or date+hour columns), "
+                f"plus a demand column (cnt/count/rides/demand/trips/rentals)."
+            )
+
+        # ── Parse and normalise datetime first so we can derive dteday & hr ───
+        if has_dt:
+            # Floor to hour boundary so groupby produces a clean hourly index
+            df["datetime"] = pd.to_datetime(df["datetime"]).dt.floor("h")
+            # Derive dteday and hr from datetime if missing
+            if "dteday" not in df.columns:
+                df["dteday"] = df["datetime"].dt.normalize()
+            if "hr" not in df.columns:
+                df["hr"] = df["datetime"].dt.hour
+        else:
+            # Ensure dteday name is consistent
+            if "dteday" not in df.columns and "date" in df.columns:
+                df = df.rename(columns={"date": "dteday"})
+            df["dteday"] = pd.to_datetime(df["dteday"])
+            df["hr"]     = df["hr"].astype(int)
+            df["datetime"] = df["dteday"] + pd.to_timedelta(df["hr"], unit="h")
+
+        df["dteday"] = pd.to_datetime(df["dteday"])
+        df["hr"]     = df["hr"].astype(int)
+
         for c in ["cnt","base_price","surge_multiplier","final_price",
                   "temp","hum","windspeed","traffic_factor"]:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
+
         df = df.sort_values("datetime").reset_index(drop=True)
+
+        # Derive missing columns from cnt so all downstream code works
+        if "surge_multiplier" not in df.columns:
+            p33 = float(df["cnt"].quantile(0.33))
+            p66 = float(df["cnt"].quantile(0.66))
+            p90 = float(df["cnt"].quantile(0.90))
+            df["surge_multiplier"] = np.where(
+                df["cnt"] < p33, 1.00,
+                np.where(df["cnt"] < p66, 1.08,
+                np.where(df["cnt"] < p90, 1.17, 1.25))
+            )
+
+        if "base_price" not in df.columns:
+            df["base_price"] = BASE_PRICE
+
+        if "final_price" not in df.columns:
+            df["final_price"] = (BASE_PRICE * df["surge_multiplier"]).round(2)
+
+        if "weekend_flag" not in df.columns:
+            df["weekend_flag"] = df["dteday"].dt.dayofweek.isin([5, 6]).astype(int)
+
         df["hour_sin"]  = np.sin(2*np.pi*df["hr"]/24)
         df["hour_cos"]  = np.cos(2*np.pi*df["hr"]/24)
         df["month_sin"] = np.sin(2*np.pi*df["dteday"].dt.month/12)
         df["month_cos"] = np.cos(2*np.pi*df["dteday"].dt.month/12)
         self.df = df
         
-        # Dynamically determine zones from data
-        if "zone" in df.columns and len(df["zone"].dropna().unique()) > 0:
-            self.dynamic_zones = list(df["zone"].dropna().unique())
-            zone_col = "zone"
-        elif "area_name" in df.columns and len(df["area_name"].dropna().unique()) > 0:
-            self.dynamic_zones = list(df["area_name"].dropna().unique())
-            zone_col = "area_name"
+        # Dynamically determine zones from data — accept many common column names
+        ZONE_COLS = ("zone","area_name","area","location","neighbourhood","neighborhood",
+                     "region","district","locality","place","station","hub")
+        zone_col = None
+        for zc in ZONE_COLS:
+            if zc in df.columns and len(df[zc].dropna().unique()) > 0:
+                zone_col = zc
+                break
+        if zone_col:
+            self.dynamic_zones = list(df[zone_col].dropna().unique())
         else:
             self.dynamic_zones = ["City Center"]
-            zone_col = None
 
         # Ensure we have clean string names, some generators output "City" etc
         self.dynamic_zones = [str(z).strip() for z in self.dynamic_zones]
@@ -203,14 +322,15 @@ class ModelEngine:
         self.monthly_ts = (df.set_index("dteday").resample("ME").agg(
                            cnt=("cnt","sum"),surge_multiplier=("surge_multiplier","mean")))
         
-        # If the last month in the dataset is incomplete (e.g. ends on the 15th), drop it
-        # so it doesn't look like a massive crash in demand to the SARIMA model.
+        # If the last month is incomplete (ends before the 27th), drop it so it doesn't
+        # look like a demand crash to SARIMA — but only if at least 1 month would remain.
         last_date = df["dteday"].max()
-        if last_date.day < last_date.days_in_month - 3:
+        if last_date.day < last_date.days_in_month - 3 and len(self.monthly_ts) > 1:
             self.monthly_ts = self.monthly_ts.iloc[:-1]
-        self.p33 = df["cnt"].quantile(0.33/48)
-        self.p66 = df["cnt"].quantile(0.66/48)
-        self.p90 = df["cnt"].quantile(0.90/48)
+        # Cache surge thresholds once so compute_surge doesn't re-query pandas on every call
+        self.p33 = float(self.hourly_ts["cnt"].quantile(0.33))
+        self.p66 = float(self.hourly_ts["cnt"].quantile(0.66))
+        self.p90 = float(self.hourly_ts["cnt"].quantile(0.90))
         # Hourly profile for downscaling
         self.hourly_profile      = df.groupby("hr")["cnt"].mean()
         self.hourly_profile_norm = self.hourly_profile / self.hourly_profile.max()
@@ -219,18 +339,36 @@ class ModelEngine:
     def _fit_models(self):
         logger.info("Fitting short-term SARIMA (hourly)...")
         train_h = self.hourly_ts["cnt"].iloc[-14*24:]
-        self.fit_hourly = SARIMAX(train_h, order=ORDER_S, seasonal_order=SORDER_S,
-                                  enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+        if len(train_h) < 48:
+            # Fewer than 2 seasonal periods — use simple non-seasonal ARIMA
+            self.fit_hourly = SARIMAX(train_h, order=(1,1,1),
+                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+        else:
+            self.fit_hourly = SARIMAX(train_h, order=ORDER_S, seasonal_order=SORDER_S,
+                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
         logger.info(f"  Hourly AIC={self.fit_hourly.aic:.1f}")
 
         logger.info("Fitting medium-term SARIMA (daily)...")
-        self.fit_daily = SARIMAX(self.daily_ts["cnt"], order=ORDER_M, seasonal_order=SORDER_M,
-                                  enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+        if len(self.daily_ts) < 3:
+            # Fewer than 3 days — constant model (mean forecast)
+            self.fit_daily = SARIMAX(self.daily_ts["cnt"], order=(0,0,0),
+                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+        elif len(self.daily_ts) < 14:
+            # Fewer than 2 weekly cycles — fall back to simple ARIMA
+            self.fit_daily = SARIMAX(self.daily_ts["cnt"], order=(1,1,0),
+                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+        else:
+            self.fit_daily = SARIMAX(self.daily_ts["cnt"], order=ORDER_M, seasonal_order=SORDER_M,
+                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
         logger.info(f"  Daily  AIC={self.fit_daily.aic:.1f}")
 
         logger.info("Fitting long-term SARIMA (monthly)...")
-        if len(self.monthly_ts) < 24:
-            # Fallback to non-seasonal simple ARIMA for short datasets (prevents crashing to 0)
+        if len(self.monthly_ts) < 3:
+            # Too few months — constant model, prevents indexing errors on 0-1 row series
+            self.fit_monthly = SARIMAX(self.monthly_ts["cnt"], order=(0,0,0),
+                                       enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+        elif len(self.monthly_ts) < 24:
+            # Fallback to non-seasonal simple ARIMA for short datasets
             self.fit_monthly = SARIMAX(self.monthly_ts["cnt"], order=(1,1,0),
                                        enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
         else:
@@ -271,10 +409,11 @@ class ModelEngine:
     # ─── Surge Logic ─────────────────────────────────────────────────────────
     def compute_surge(self, demand, date_str=None):
         d = float(demand)
-        p33 = self.hourly_ts["cnt"].quantile(0.33)
-        p66 = self.hourly_ts["cnt"].quantile(0.66)
-        p90 = self.hourly_ts["cnt"].quantile(0.90)
-        
+        # Use cached quantiles computed once during _build_ts (avoids re-querying pandas every call)
+        p33 = self.p33 if self.p33 is not None else float(self.hourly_ts["cnt"].quantile(0.33))
+        p66 = self.p66 if self.p66 is not None else float(self.hourly_ts["cnt"].quantile(0.66))
+        p90 = self.p90 if self.p90 is not None else float(self.hourly_ts["cnt"].quantile(0.90))
+
         peak = float(self.surge_config.get("peak_surge", 1.25))
         
         # Calculate base surge dynamically scaling up to peak
@@ -295,13 +434,23 @@ class ModelEngine:
 
     # ─── Public Training Entry ────────────────────────────────────────────────
     def train(self):
-        from datetime import datetime
-        self._load_data()
-        self._build_ts()
-        self._fit_models()
-        self._precompute_forecasts()
-        self.last_trained = datetime.now()
-        logger.info("✅ All SARIMA models trained and forecasts cached.")
+        with self._train_lock:
+            self.is_training = True
+            self.train_error = None
+            try:
+                self._load_data()
+                self._build_ts()
+                self._fit_models()
+                self._precompute_forecasts()
+                self.last_trained = datetime.now()
+                logger.info("✅ All SARIMA models trained and forecasts cached.")
+            except Exception as e:
+                self.train_error = str(e)
+                logger.error(f"❌ Training failed: {e}")
+                import traceback; logger.error(traceback.format_exc())
+                # Do NOT re-raise — error is captured in train_error for frontend polling
+            finally:
+                self.is_training = False
 
     # ─── Predict Demand & Price ───────────────────────────────────────────────
     def predict(self, date: str, time: str, location: str = "Bangalore", bike_model: str = "All") -> dict:
@@ -407,8 +556,8 @@ class ModelEngine:
                     test_agg = max(0, (t_dem_d / 24.0) * t_norm)
                     
                 test_surge = self.compute_surge(test_agg, date)
-                test_price = round(BASE_PRICE * test_surge, 2)
-                
+                test_price = round(model_base * test_surge, 2)
+
                 if test_price < min_price:
                     min_price = test_price
                     best_dt = test_dt
@@ -428,9 +577,9 @@ class ModelEngine:
             "base_price":      model_base,
             "predicted_price": price,
             "price_label":     price_label,
-            "savings_vs_peak": round(model_base * peak_surge_limit * area_w - price, 2),
+            "savings_vs_peak": round(max(0.0, model_base * peak_surge_limit * area_w - price), 2),
             "alt_time":        alt_time,
-            "alt_price":       round(model_base * area_w, 2),
+            "alt_price":       round(alt_price, 2) if alt_time else None,
             "area_weight":     area_w,
         }
 
@@ -681,7 +830,7 @@ class ModelEngine:
             "weekend_boost":     wknd_boost,
             "tier":              tier,
             "strategy":          "Surge pricing active" if surge > 1.0 else "Standard pricing",
-            "savings_vs_peak":   round(81.25 - price, 2),
+            "savings_vs_peak":   round(max(0.0, BASE_PRICE * peak - price), 2),
         }
 
     def get_zone_intelligence(self):

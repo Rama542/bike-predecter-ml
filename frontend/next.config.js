@@ -14,9 +14,15 @@ const nextConfig = {
       { protocol: "https", hostname: "img.clerk.com" },
     ],
   },
-  devIndicators: {
-    appIsrStatus: false,
-    buildActivity: false,
+  devIndicators: false,
+  // Allow large CSV dataset uploads through the ML proxy route
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "100mb",
+    },
+    // Raise the body clone limit so 34MB+ CSV files pass through the /api/ml proxy.
+    // Default is 10MB; route handlers use this same limit.
+    middlewareClientMaxBodySize: "100mb",
   },
   // ML proxy is handled by app/api/ml/[...path]/route.ts (reads ML_API_URL at runtime)
 };

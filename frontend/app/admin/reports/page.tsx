@@ -245,6 +245,14 @@ export default function ReportsPage() {
 
   useEffect(() => { loadData(); }, []);
 
+  // Reload when a new dataset finishes training
+  useEffect(() => {
+    const onTrained = () => { void loadData(); };
+    window.addEventListener("ml-trained", onTrained);
+    return () => window.removeEventListener("ml-trained", onTrained);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Derived KPIs — split actual vs forecast ──
   const historical     = monthlyData.filter(r => !r.isForecast);
   const forecast       = monthlyData.filter(r => r.isForecast);

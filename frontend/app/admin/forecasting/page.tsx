@@ -160,6 +160,14 @@ export default function ForecastingPage() {
 
   useEffect(() => { loadData(); }, []);
 
+  // Reload when a new dataset finishes training
+  useEffect(() => {
+    const onTrained = () => { void loadData(); };
+    window.addEventListener("ml-trained", onTrained);
+    return () => window.removeEventListener("ml-trained", onTrained);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Colors are now dynamically scaled based on the max value in the current dataset
   // inside the render function.
 

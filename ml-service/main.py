@@ -1,6 +1,6 @@
 """
 BikeSense AI — FastAPI ML Microservice
-SARIMA/SARIMAX Demand & Price Forecasting Engine
+SARIMA/SARIMAX Demand & Price Forecasting Engine v2.1
 """
 
 from fastapi import FastAPI, HTTPException
@@ -53,6 +53,12 @@ app.add_middleware(
         "http://localhost:3003",
         "http://localhost:3004",
         "http://localhost:3005",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3002",
+        "http://127.0.0.1:3003",
+        "http://127.0.0.1:3004",
+        "http://127.0.0.1:3005",
     ],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,

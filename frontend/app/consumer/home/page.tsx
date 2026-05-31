@@ -1,456 +1,251 @@
 "use client";
 import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
-  AreaChart, Area, XAxis, YAxis,
-  CartesianGrid, Tooltip, ResponsiveContainer,
-} from "recharts";
-import {
-  MapPin, Clock, Zap, TrendingUp, Star, Battery, ChevronRight,
-  Sparkles, AlertTriangle, CheckCircle, RefreshCw, WifiOff, Bike
+  MapPin, Calendar, Clock, Bike, Zap, Shield, Star,
+  Search, ChevronRight, CheckCircle, ArrowRight, Sparkles, TrendingDown,
 } from "lucide-react";
-import {
-  predictDemand, getBikes, getBestTime, getHourlyPricing, getDynamicZones, getDynamicModels,
-  type BikeItem, type HourlyPricePoint,
-} from "@/lib/api";
+import { getBikes, getHourlyPricing, getDynamicZones, type BikeItem } from "@/lib/api";
 
-const BIKE_META: Record<string, { color: string; emoji: string }> = {
-  "Ather 450X":     { color: "#6366f1", emoji: "⚡" },
-  "Bounce Infinity":{ color: "#00f5ff", emoji: "⚡" },
-  "Yulu Move":      { color: "#00ff88", emoji: "⚡" },
-  "Honda Activa":   { color: "#f59e0b", emoji: "🏍️" },
-  "Royal Enfield":  { color: "#a78bfa", emoji: "👑" },
-  "Rapido Bike":    { color: "#94a3b8", emoji: "💰" },
+const BIKE_EMOJI: Record<string, string> = {
+  "Ather 450X": "⚡", "Bounce Infinity": "⚡", "Yulu Move": "⚡",
+  "Honda Activa": "🏍️", "Royal Enfield": "👑", "Rapido Bike": "💰",
 };
-const getMeta = (name: string) => BIKE_META[name] ?? { color: "#6366f1", emoji: "🚲" };
+const BIKE_COLOR: Record<string, string> = {
+  "Ather 450X": "#6366f1", "Bounce Infinity": "#00f5ff", "Yulu Move": "#00ff88",
+  "Honda Activa": "#f59e0b", "Royal Enfield": "#a78bfa", "Rapido Bike": "#94a3b8",
+};
 
-function ChartTooltip({ active, payload, label }: any) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="glass rounded-lg p-3 text-xs border border-white/5">
-      <p className="text-slate-400 mb-1">{label}</p>
-      {payload.map((p: any) => (
-        <p key={p.name} style={{ color: p.color }}>
-          {p.name}: <span className="font-semibold text-white">
-            {p.name === "Price" ? `₹${p.value}` : p.value}
-          </span>
-        </p>
-      ))}
-    </div>
-  );
-}
-
-function Skeleton({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse bg-white/5 rounded-lg ${className}`} />;
-}
-
-// ─── Dynamic Price Predictor (uses real backend) ──────────────────────────────
-function PricePredictor({ stdPrice, selectedArea, onAreaChange, areas, models }: { stdPrice: number, selectedArea: string, onAreaChange: (a: string) => void, areas: string[], models: string[] }) {
-  const [form,    setForm]    = useState({ model: models[0] || "Standard Bike", date: "", time: "09:00" });
-  const [result,  setResult]  = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-  const [isLive,  setIsLive]  = useState<boolean | null>(null);
-  const [error,   setError]   = useState<string | null>(null);
-
-  const predict = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const date = form.date || new Date().toISOString().split("T")[0];
-      const res = await predictDemand({ date, time: form.time, location: selectedArea, bike_model: form.model });
-      // Use backend-computed price directly — it already applies area weight + model base + surge
-      setIsLive(res.expected_demand % 10 !== 0);
-
-      setResult({
-        price:   res.predicted_price,
-        surge:   res.surge_multiplier,
-        label:   res.price_label,
-        demand:  res.demand_level,
-        saving:  res.savings_vs_peak > 0 ? res.savings_vs_peak : 0,
-        altTime: res.surge_multiplier > 1.0 ? res.alt_time : null,
-        altPrice: res.alt_price ?? res.base_price,
-      });
-    } catch {
-      setError("Prediction failed. Check your connection.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="glass rounded-2xl p-6">
-      <div className="flex items-center gap-2 mb-5">
-        <Zap className="w-5 h-5 text-brand-400" />
-        <h2 className="font-display font-semibold text-white">Smart Price Predictor</h2>
-        <span className="badge-info ml-auto">
-          {isLive === true ? "SARIMA Live" : isLive === false ? "Demo Mode" : "SARIMA AI"}
-        </span>
-      </div>
-
-      <div className="grid sm:grid-cols-2 gap-3 mb-4">
-        <div>
-          <label className="text-xs text-slate-500 mb-1.5 block">Pickup Area</label>
-          <select value={selectedArea} onChange={e => onAreaChange(e.target.value)} className="input-dark w-full">
-            {areas.map(a => <option key={a} value={a}>{a}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="text-xs text-slate-500 mb-1.5 block">Bike Type</label>
-          <select value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} className="input-dark w-full">
-            {models.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="text-xs text-slate-500 mb-1.5 block">Date</label>
-          <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="input-dark w-full" />
-        </div>
-        <div>
-          <label className="text-xs text-slate-500 mb-1.5 block">Time</label>
-          <input type="time" value={form.time} onChange={e => setForm({ ...form, time: e.target.value })} className="input-dark w-full" />
-        </div>
-      </div>
-
-      <button onClick={predict} disabled={loading} className="btn-primary w-full flex items-center justify-center gap-2 mb-4">
-        {loading
-          ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Analysing with SARIMA...</>
-          : <><Sparkles className="w-4 h-4" />Predict Price &amp; Demand</>}
-      </button>
-
-      {error && (
-        <p className="text-xs text-red-400 flex items-center gap-1.5 mb-2">
-          <WifiOff className="w-3 h-3" /> {error}
-        </p>
-      )}
-
-      {result && (
-        <motion.div key={Date.now()} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          <div className={`rounded-xl p-5 ${result.surge > 1.1 ? "card-gradient-orange" : result.surge > 1 ? "card-gradient-blue" : "card-gradient-green"} border border-white/10`}>
-            <div className="flex items-start justify-between mb-3">
-              <div>
-                <div className="text-3xl font-display font-bold text-white mb-0.5">₹{result.price}/hr</div>
-                <div className={`text-sm font-medium ${result.surge > 1.1 ? "text-red-400" : result.surge > 1 ? "text-amber-400" : "text-emerald-400"}`}>
-                  {result.label} · ×{result.surge.toFixed(2)} surge
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-sm text-slate-400">Demand</div>
-                <div className="font-semibold text-white">{result.demand}</div>
-              </div>
-            </div>
-
-            {result.saving > 0 && (
-              <div className="flex items-center gap-2 p-3 glass-light rounded-lg mb-3">
-                <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span className="text-sm text-emerald-300">
-                  You save <strong>₹{result.saving}/hr</strong> vs peak pricing!
-                </span>
-              </div>
-            )}
-
-            {result.altTime && (
-              <div className="flex items-center gap-2 p-3 glass-light rounded-lg">
-                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                <span className="text-sm text-amber-200">
-                  Better deal at <strong>{result.altTime}</strong> — just ₹{result.altPrice}/hr!
-                </span>
-              </div>
-            )}
-          </div>
-        </motion.div>
-      )}
-    </div>
-  );
-}
-
-// ─── Main Page ────────────────────────────────────────────────────────────────
 export default function ConsumerHome() {
+  const router = useRouter();
+  const [areas, setAreas] = useState<string[]>([]);
   const [selectedArea, setSelectedArea] = useState("");
-  const [dynamicAreas, setDynamicAreas] = useState<string[]>([]);
-  const [dynamicModels, setDynamicModels] = useState<string[]>([]);
-  const [bikes,       setBikes]       = useState<BikeItem[]>([]);
-  const [hourlyData,  setHourlyData]  = useState<HourlyPricePoint[]>([]);
-  const [tips,        setTips]        = useState<{ icon: string; title: string; desc: string; tag: string }[]>([]);
-  const [loadingBikes,  setLoadingBikes]  = useState(true);
-  const [loadingCharts, setLoadingCharts] = useState(true);
-  const [isLive,        setIsLive]        = useState(false);
-  const [showSplash,    setShowSplash]    = useState(true);
+  const [date, setDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [time, setTime] = useState(() => {
+    const h = new Date().getHours();
+    return `${String(h + 1).padStart(2, "0")}:00`;
+  });
+  const [featuredBikes, setFeaturedBikes] = useState<BikeItem[]>([]);
+  const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const timer = setTimeout(() => setShowSplash(false), 2000);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Geolocation is disabled here to allow dynamic areas from the dataset to be the default
-  // as the previously hardcoded coordinates were only for Bengaluru.
-
-  // Derived values from live data
-  const stdPrice  = hourlyData.length ? Math.min(...hourlyData.map(h => h.price)) : 65;
-  const peakPrice = hourlyData.length ? Math.max(...hourlyData.map(h => h.price)) : 81.25;
-  const currentHour = new Date().getHours();
-  const currentPricing = hourlyData.find(h => h.hour === currentHour);
-  const savingNow = currentPricing ? parseFloat((peakPrice - currentPricing.price).toFixed(2)) : 0;
-
-  useEffect(() => {
-    // Load dynamic zones and models first
-    const initData = async () => {
-      try {
-        const [zones, models] = await Promise.all([getDynamicZones(), getDynamicModels()]);
-        setDynamicAreas(zones);
-        setDynamicModels(models);
-        if (!selectedArea && zones.length > 0) {
-          setSelectedArea(zones[0]);
-        }
-      } catch (e) {
-        console.error("Failed to load dynamic config", e);
-      }
-    };
-    initData();
+    getDynamicZones().then(z => {
+      setAreas(z);
+      setSelectedArea(z[0] || "");
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
     if (!selectedArea) return;
-
-    // Load bikes
-    const loadBikes = async () => {
-      setLoadingBikes(true);
-      try {
-        const data = await getBikes(selectedArea);
-        setBikes(data.filter(b => b.available).slice(0, 4));
-        setIsLive(data.length > 0);
-      } catch { /* fallback empty */ }
-      finally { setLoadingBikes(false); }
-    };
-
-    // Load charts + tips
-    const loadCharts = async () => {
-      setLoadingCharts(true);
-      try {
-        const [hourly, bestTime] = await Promise.all([getHourlyPricing(selectedArea), getBestTime(selectedArea)]);
-        setHourlyData(hourly);
-
-        // Build tips from live best-time API data
-        if (bestTime && bestTime.tip) {
-          const cheapestHour = bestTime.cheapest_hours?.[0];
-          const liveTips = [
-            {
-              icon: "💚",
-              title: "Best time now",
-              desc: currentPricing
-                ? `${currentPricing.demand_label} pricing active · ₹${currentPricing.price}/hr`
-                : bestTime.tip,
-              tag: savingNow > 0 ? `Save ₹${savingNow}/hr` : "Good time",
-            },
-            {
-              icon: (bestTime.cheapest_day ?? "Wednesday").substring(0, 3).toUpperCase(),
-              title: "Cheapest day",
-              desc: `${bestTime.cheapest_day ?? "Wednesday"} — avg demand lowest`,
-              tag: "Book ahead",
-            },
-            {
-              icon: "⚡",
-              title: "Peak hours",
-              desc: bestTime.peak_hours?.length
-                ? `Avoid ${bestTime.peak_hours.map((p: any) => `${p.hour}:00`).slice(0, 2).join(", ")} (surge pricing)`
-                : "Avoid 5–8 PM (×1.25 surge)",
-              tag: "Rush hour",
-            },
-          ];
-          setTips(liveTips);
-        }
-      } catch { /* fallback empty */ }
-      finally { setLoadingCharts(false); }
-    };
-
-    loadBikes();
-    loadCharts();
+    setLoading(true);
+    Promise.all([getBikes(selectedArea), getHourlyPricing(selectedArea)])
+      .then(([bikes, hourly]) => {
+        setFeaturedBikes(bikes.filter(b => b.available).slice(0, 4));
+        const now = new Date().getHours();
+        setCurrentPrice(hourly.find(h => h.hour === now)?.price ?? null);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [selectedArea]);
 
-  return (
-    <>
-      <AnimatePresence>
-        {showSplash && (
-          <motion.div
-            initial={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.5, ease: "easeInOut" }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-dark-900 pointer-events-none"
-          >
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ duration: 0.4 }}
-              className="text-center flex flex-col items-center"
-            >
-              <motion.div
-                initial={{ x: -100, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-                transition={{ type: "spring", damping: 15, stiffness: 100, delay: 0.2 }}
-                className="w-16 h-16 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-[0_0_30px_rgba(16,185,129,0.3)] mb-6"
-              >
-                <motion.div
-                  animate={{ rotate: [-5, 5, -5] }}
-                  transition={{ repeat: Infinity, duration: 1 }}
-                >
-                  <Bike className="w-8 h-8 text-white" />
-                </motion.div>
-              </motion.div>
-              
-              <motion.h1
-                initial={{ y: 10, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ delay: 0.4 }}
-                className="text-3xl font-display font-bold text-white tracking-tight"
-              >
-                Bike<span className="text-emerald-400">Sense</span>
-              </motion.h1>
-              
-              <motion.p
-                initial={{ y: 10, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ delay: 0.6 }}
-                className="text-slate-400 mt-2 text-sm"
-              >
-                Finding the best rides near you...
-              </motion.p>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+  const handleSearch = () => {
+    const params = new URLSearchParams();
+    if (selectedArea) params.set("area", selectedArea);
+    if (date) params.set("date", date);
+    if (time) params.set("time", time);
+    router.push(`/consumer/marketplace?${params.toString()}`);
+  };
 
-      <div className="space-y-6">
-        {/* Welcome */}
-        <div className="flex items-start justify-between">
-        <div>
-          <h1 className="font-display font-bold text-2xl text-white">Welcome back 👋</h1>
-          <p className="text-slate-500 text-sm mt-0.5">Find the best bike deals in your city today</p>
-        </div>
-        <div className="text-right flex items-center gap-3">
-          {isLive && (
-            <span className="badge-success flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" /> Live
-            </span>
-          )}
-          <div>
-            <div className="text-xs text-slate-500">Current Price</div>
-            <div className="font-display font-bold text-xl text-brand-400">
-              {loadingCharts ? "..." : `₹${currentPricing?.price ?? stdPrice}/hr`}
+  return (
+    <div className="space-y-8 -mx-6 -mt-6">
+      {/* ── Hero ── */}
+      <div className="relative px-6 pt-14 pb-10 overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-br from-emerald-950/60 via-slate-900/80 to-slate-900 pointer-events-none" />
+        <div className="absolute top-0 left-1/3 w-[500px] h-[250px] bg-emerald-500/10 blur-[90px] rounded-full pointer-events-none" />
+        <div className="absolute bottom-0 right-0 w-[300px] h-[200px] bg-brand-500/8 blur-[70px] rounded-full pointer-events-none" />
+
+        <div className="relative max-w-2xl mx-auto">
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-8">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium mb-5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              AI-powered live pricing · Always fair
             </div>
-          </div>
+            <h1 className="text-4xl md:text-5xl font-display font-bold text-white mb-4 leading-tight">
+              Book a Bike,<br />
+              <span className="text-emerald-400">Ride on Your Terms</span>
+            </h1>
+            <p className="text-slate-400 text-base md:text-lg max-w-lg mx-auto">
+              Hourly bike rentals with real-time surge pricing. Pick up anywhere, pay only for what you ride.
+            </p>
+          </motion.div>
+
+          {/* Search card */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}
+            className="glass rounded-2xl p-5 shadow-2xl">
+            <div className="grid sm:grid-cols-3 gap-3 mb-4">
+              <div>
+                <label className="text-xs text-slate-500 mb-1.5 flex items-center gap-1">
+                  <MapPin className="w-3 h-3" /> Pickup Area
+                </label>
+                <select value={selectedArea} onChange={e => setSelectedArea(e.target.value)}
+                  className="input-dark w-full">
+                  {areas.map(a => <option key={a} value={a}>{a}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 mb-1.5 flex items-center gap-1">
+                  <Calendar className="w-3 h-3" /> Date
+                </label>
+                <input type="date" value={date}
+                  min={new Date().toISOString().split("T")[0]}
+                  onChange={e => setDate(e.target.value)} className="input-dark w-full" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 mb-1.5 flex items-center gap-1">
+                  <Clock className="w-3 h-3" /> Pickup Time
+                </label>
+                <input type="time" value={time} onChange={e => setTime(e.target.value)}
+                  className="input-dark w-full" />
+              </div>
+            </div>
+            <button onClick={handleSearch}
+              className="btn-primary w-full flex items-center justify-center gap-2 py-3.5 text-base font-semibold rounded-xl">
+              <Search className="w-5 h-5" />
+              Find Available Bikes
+            </button>
+            {currentPrice && (
+              <p className="text-center text-xs text-slate-500 mt-3">
+                Right now in <span className="text-white">{selectedArea}</span>:&nbsp;
+                <span className="text-emerald-400 font-semibold">₹{currentPrice}/hr</span>
+              </p>
+            )}
+          </motion.div>
         </div>
       </div>
 
-      {/* Quick tips — dynamic from getBestTime() */}
-      <div className="grid md:grid-cols-3 gap-3">
-        {loadingCharts
-          ? Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-20" />)
-          : tips.map((t, i) => (
-              <motion.div key={t.title} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }}
-                className="glass rounded-xl p-4 flex items-start gap-3 hover-lift">
-                {t.icon.length > 2 ? (
-                  <div className="w-10 h-10 shrink-0 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-xs uppercase tracking-wider border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
-                    {t.icon}
-                  </div>
-                ) : (
-                  <span className="text-3xl shrink-0 drop-shadow-md">{t.icon}</span>
-                )}
-                <div className="flex-1">
-                  <div className="font-semibold text-white text-sm">{t.title}</div>
-                  <div className="text-xs text-slate-300 mt-1 font-medium">{t.desc}</div>
+      <div className="px-6 space-y-10 pb-8">
+
+        {/* ── Quick stats ── */}
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.15 }}
+          className="grid grid-cols-3 gap-3">
+          {[
+            { icon: Bike,        label: "Bikes Online",  value: featuredBikes.length > 0 ? `${featuredBikes.reduce((s, b) => s + (b.available_count ?? 1), 0)}+` : "—", color: "text-emerald-400" },
+            { icon: TrendingDown,label: "From",           value: featuredBikes.length > 0 ? `₹${Math.round(Math.min(...featuredBikes.map(b => b.price_per_hr)))}/hr` : "—", color: "text-brand-400" },
+            { icon: Sparkles,    label: "Pricing Engine", value: "Live AI",                                                                                                 color: "text-amber-400" },
+          ].map((s, i) => (
+            <motion.div key={s.label} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 + i * 0.07 }}
+              className="glass rounded-xl p-4 text-center">
+              <s.icon className={`w-5 h-5 mx-auto mb-2 ${s.color}`} />
+              <div className={`font-display font-bold text-lg ${s.color}`}>{s.value}</div>
+              <div className="text-xs text-slate-500 mt-0.5">{s.label}</div>
+            </motion.div>
+          ))}
+        </motion.div>
+
+        {/* ── How it works ── */}
+        <div>
+          <h2 className="font-display font-bold text-xl text-white mb-5">How It Works</h2>
+          <div className="grid md:grid-cols-3 gap-4">
+            {[
+              { n: "1", icon: Search,       title: "Search",  color: "emerald", desc: "Choose your area, date and pickup time to see all bikes available at that moment." },
+              { n: "2", icon: Bike,         title: "Book",    color: "brand",   desc: "Select a bike, pick your ride duration, and confirm in seconds. No paperwork." },
+              { n: "3", icon: CheckCircle,  title: "Ride",    color: "amber",   desc: "Get your booking ID and head to the pickup spot. Pay only for hours you use." },
+            ].map((s, i) => (
+              <motion.div key={s.n} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 + i * 0.1 }}
+                className="glass rounded-2xl p-5 flex items-start gap-4">
+                <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0
+                  bg-${s.color}-500/15 border border-${s.color}-500/25`}>
+                  <s.icon className={`w-5 h-5 text-${s.color}-400`} />
                 </div>
-                <span className="badge-success text-xs whitespace-nowrap">{t.tag}</span>
+                <div>
+                  <div className="font-semibold text-white text-sm mb-1">{s.n}. {s.title}</div>
+                  <div className="text-xs text-slate-400 leading-relaxed">{s.desc}</div>
+                </div>
               </motion.div>
             ))}
-      </div>
-
-      <div className="grid lg:grid-cols-5 gap-6">
-        {/* Price Predictor */}
-        <div className="lg:col-span-2">
-          <PricePredictor stdPrice={stdPrice} selectedArea={selectedArea} onAreaChange={setSelectedArea} areas={dynamicAreas.length > 0 ? dynamicAreas : ["Loading..."]} models={dynamicModels.length > 0 ? dynamicModels : ["Loading..."]} />
+          </div>
         </div>
 
-        {/* Right Column */}
-        <div className="lg:col-span-3 space-y-6">
-          {/* Today's Price Trend — DYNAMIC from getHourlyPricing() */}
-          <div className="glass rounded-xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="font-display font-semibold text-white">Today's Price Trend</h3>
-                <p className="text-xs text-slate-500">Hourly pricing across your city · SARIMA model</p>
+        {/* ── Available Bikes ── */}
+        <div>
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="font-display font-bold text-xl text-white">Bikes Near You</h2>
+            <Link href="/consumer/marketplace"
+              className="text-sm text-brand-400 hover:text-brand-300 flex items-center gap-1 transition-colors">
+              See all <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-3">
+            {loading
+              ? Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="glass rounded-2xl h-24 animate-pulse" />
+                ))
+              : featuredBikes.map((bike, i) => (
+                  <motion.div key={bike.id}
+                    initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }}
+                    onClick={() => router.push("/consumer/marketplace")}
+                    className="glass rounded-2xl p-4 flex items-center gap-4 hover-lift cursor-pointer group">
+                    <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shrink-0"
+                      style={{
+                        background: `${BIKE_COLOR[bike.name] ?? "#6366f1"}18`,
+                        border: `1px solid ${BIKE_COLOR[bike.name] ?? "#6366f1"}28`,
+                      }}>
+                      {BIKE_EMOJI[bike.name] ?? "🚲"}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-white text-sm">{bike.name}</div>
+                      <div className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
+                        <MapPin className="w-3 h-3 shrink-0" />{bike.area}
+                        <span className="mx-1 text-slate-700">·</span>
+                        <Star className="w-3 h-3 fill-amber-400 text-amber-400 shrink-0" />
+                        <span className="text-amber-400">{bike.rating}</span>
+                      </div>
+                      <span className={`mt-1 inline-block text-xs px-2 py-0.5 rounded-full
+                        ${bike.surge_multiplier > 1.1 ? "bg-red-500/10 text-red-400" :
+                          bike.surge_multiplier > 1   ? "bg-amber-500/10 text-amber-400" :
+                                                         "bg-emerald-500/10 text-emerald-400"}`}>
+                        {bike.demand_level} demand
+                      </span>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="font-display font-bold text-white text-lg">
+                        ₹{bike.price_per_hr}
+                        <span className="text-xs text-slate-500 font-normal">/hr</span>
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5">{bike.available_count} free</div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-400 transition-colors shrink-0" />
+                  </motion.div>
+                ))}
+          </div>
+        </div>
+
+        {/* ── Why BikeSense ── */}
+        <div className="glass rounded-2xl p-6">
+          <h2 className="font-display font-bold text-xl text-white mb-5 text-center">Why BikeSense?</h2>
+          <div className="grid sm:grid-cols-3 gap-5">
+            {[
+              { icon: Zap,    color: "amber",   title: "Surge-Smart Pricing",  desc: "Our SARIMA AI predicts demand so you always know the cheapest time to ride." },
+              { icon: Shield, color: "emerald", title: "Fully Insured",         desc: "Every ride is covered. Ride worry-free knowing we've got you protected." },
+              { icon: Star,   color: "brand",   title: "Earn Rewards",          desc: "Collect points on every booking and redeem them for free rides and discounts." },
+            ].map(f => (
+              <div key={f.title} className="text-center">
+                <div className={`w-12 h-12 rounded-2xl mx-auto flex items-center justify-center mb-3
+                  bg-${f.color}-500/15 border border-${f.color}-500/20`}>
+                  <f.icon className={`w-6 h-6 text-${f.color}-400`} />
+                </div>
+                <div className="font-semibold text-white text-sm mb-1">{f.title}</div>
+                <div className="text-xs text-slate-400 leading-relaxed">{f.desc}</div>
               </div>
-              <TrendingUp className="w-4 h-4 text-emerald-400" />
-            </div>
-            {loadingCharts ? <Skeleton className="h-40" /> : (
-              <ResponsiveContainer width="100%" height={160}>
-                <AreaChart data={hourlyData}>
-                  <defs>
-                    <linearGradient id="priceGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                  <XAxis dataKey="hour_label" tick={{ fontSize: 9 }} interval={3} />
-                  <YAxis domain={[stdPrice - 5, peakPrice + 5]} tick={{ fontSize: 9 }} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Area type="stepAfter" dataKey="price" name="Price" stroke="#10b981" fill="url(#priceGrad)" strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-            <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
-              <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-red-400 inline-block" /> Peak surge (₹{peakPrice})</span>
-              <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-emerald-400 inline-block" /> Best time (₹{stdPrice})</span>
-            </div>
-          </div>
-
-          {/* Nearby Bikes — DYNAMIC from getBikes() */}
-          <div className="glass rounded-xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-display font-semibold text-white">Nearby Available Bikes</h3>
-              <a href="/consumer/marketplace" className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1">
-                View all <ChevronRight className="w-3 h-3" />
-              </a>
-            </div>
-            <div className="space-y-3">
-              {loadingBikes
-                ? Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16" />)
-                : bikes.length > 0
-                ? bikes.map((b, i) => {
-                    const meta = getMeta(b.name);
-                    return (
-                      <motion.div key={b.id} initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.08 }}
-                        className="flex items-center gap-4 p-3 glass-light rounded-xl hover-lift cursor-pointer">
-                        <div className="w-10 h-10 rounded-lg flex items-center justify-center text-lg"
-                          style={{ background: `${meta.color}15`, border: `1px solid ${meta.color}25` }}>
-                          {meta.emoji}
-                        </div>
-                        <div className="flex-1">
-                          <div className="font-medium text-sm text-white">{b.name}</div>
-                          <div className="text-xs text-slate-500 flex items-center gap-2">
-                            <MapPin className="w-3 h-3" />{b.area}
-                            {b.battery != null && <><Battery className="w-3 h-3 ml-1 text-emerald-400" />{b.battery}%</>}
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="font-display font-bold text-white">₹{b.price_per_hr}<span className="text-xs text-slate-500">/hr</span></div>
-                          <div className="flex items-center gap-1 text-xs text-amber-400 justify-end">
-                            <Star className="w-3 h-3 fill-amber-400" />{b.rating}
-                          </div>
-                        </div>
-                        <ChevronRight className="w-4 h-4 text-slate-600" />
-                      </motion.div>
-                    );
-                  })
-                : (
-                  <div className="text-center py-6 text-slate-500 text-sm">
-                    <WifiOff className="w-6 h-6 mx-auto mb-2 opacity-50" />
-                    No bikes available. <a href="/consumer/marketplace" className="text-brand-400 hover:underline">Check marketplace →</a>
-                  </div>
-                )}
-            </div>
+            ))}
           </div>
         </div>
+
       </div>
-      </div>
-    </>
+    </div>
   );
 }

@@ -10,7 +10,7 @@ import {
   Activity, AlertTriangle, CheckCircle, Clock, Zap, RefreshCw,
   UploadCloud, FileText, CheckCircle2, X
 } from "lucide-react";
-import { getAdminRevenue, getShortForecast, getHeatmapData, getLiveAlerts, getZoneIntelligence, type RevenueData, type ForecastPoint } from "@/lib/api";
+import { getAdminRevenue, getShortForecast, getHeatmapData, getLiveAlerts, getZoneIntelligence, uploadDataset, type RevenueData, type ForecastPoint } from "@/lib/api";
 import toast from "react-hot-toast";
 
 // ─── Welcome Splash ────────────────────────────────────────────────────────────
@@ -19,6 +19,7 @@ function WelcomeSplash({ onDismiss }: { onDismiss: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Auto-advance from bike animation → upload panel after 3.2s
   useEffect(() => {
@@ -26,19 +27,62 @@ function WelcomeSplash({ onDismiss }: { onDismiss: () => void }) {
     return () => clearTimeout(t);
   }, []);
 
+  // Cleanup polling interval on unmount
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
   const handleUpload = async () => {
     if (!file) return;
     setUploading(true);
-    const formData = new FormData();
-    formData.append("file", file);
+    // Snapshot last_trained before upload so we can detect when a new train completes
+    let snapshotLastTrained: string | null = null;
     try {
-      const mlBase = process.env.NEXT_PUBLIC_ML_API_URL || "http://localhost:8000";
-      const res = await fetch(`${mlBase}/api/v1/admin/upload-dataset`, { method: "POST", body: formData });
-      const data = await res.json();
+      const sr = await fetch("/api/ml/admin/system-status");
+      const sd = await sr.json();
+      snapshotLastTrained = sd.last_trained ?? null;
+    } catch {}
+
+    try {
+      const data = await uploadDataset(file);
       if (data.success) {
-        setUploaded(true);
-        toast.success("Dataset uploaded! SARIMA models retrained.");
-        setTimeout(onDismiss, 1800);
+        toast.success("Dataset uploaded! Training in progress…");
+        // Poll system-status until is_training flips false AND last_trained changes
+        let attempts = 0;
+        pollRef.current = setInterval(async () => {
+          attempts++;
+          try {
+            const sr = await fetch("/api/ml/admin/system-status");
+            const sd = await sr.json();
+
+            if (sd.train_error) {
+              if (pollRef.current) clearInterval(pollRef.current);
+              pollRef.current = null;
+              setUploaded(true);
+              setUploading(false);
+              setTimeout(onDismiss, 2000);
+              return;
+            }
+
+            const newLastTrained = sd.last_trained ?? null;
+            const isNewer = newLastTrained && newLastTrained !== snapshotLastTrained;
+            if (!sd.is_training && isNewer) {
+              if (pollRef.current) clearInterval(pollRef.current);
+              pollRef.current = null;
+              setUploaded(true);
+              setUploading(false);
+              window.dispatchEvent(new CustomEvent("ml-trained", { detail: { last_trained: newLastTrained } }));
+              setTimeout(onDismiss, 1800);
+            }
+          } catch {}
+          if (attempts >= 60) {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            setUploaded(true);
+            setUploading(false);
+            setTimeout(onDismiss, 1800);
+          }
+        }, 3000);
       } else {
         toast.error(data.error || "Upload failed");
         setUploading(false);
@@ -383,6 +427,14 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => { loadData(); }, []);
+
+  // Reload when a new dataset finishes training
+  useEffect(() => {
+    const onTrained = () => { void loadData(); };
+    window.addEventListener("ml-trained", onTrained);
+    return () => window.removeEventListener("ml-trained", onTrained);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // KPI cards derived from real revenue data
   const kpis = revenue

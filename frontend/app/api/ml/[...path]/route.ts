@@ -13,8 +13,19 @@ async function proxy(req: NextRequest, pathSegments: string[]): Promise<NextResp
     const headers = new Headers();
     req.headers.forEach((value, key) => {
       const lowerKey = key.toLowerCase();
-      // Avoid forwarding headers that can break the proxy request
-      if (lowerKey !== "host" && lowerKey !== "connection" && lowerKey !== "content-length") {
+      // Strip hop-by-hop headers and content-length (re-derived from buffer size by fetch)
+      // transfer-encoding MUST be stripped: browser may send chunked, but proxy buffers the
+      // body fully — forwarding the header causes FastAPI/Starlette to mis-parse the body
+      if (
+        lowerKey !== "host" &&
+        lowerKey !== "connection" &&
+        lowerKey !== "content-length" &&
+        lowerKey !== "transfer-encoding" &&
+        lowerKey !== "te" &&
+        lowerKey !== "trailer" &&
+        lowerKey !== "upgrade" &&
+        lowerKey !== "expect"          // undici (Node fetch) does not support Expect header
+      ) {
         headers.set(key, value);
       }
     });
@@ -23,13 +34,12 @@ async function proxy(req: NextRequest, pathSegments: string[]): Promise<NextResp
     const fetchOptions: any = {
       method: req.method,
       headers,
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(60000),
     };
 
     if (isPost) {
       const buffer = await req.arrayBuffer();
       fetchOptions.body = buffer;
-      // duplex is not needed when body is a buffer
     }
 
     console.log(`[ML Proxy] Sending ${req.method} to ${url}`);

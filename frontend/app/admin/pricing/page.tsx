@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -212,6 +212,24 @@ export default function PricingPage() {
   useEffect(() => { fetchEvents(); }, [fetchEvents]);
 
   const refreshAll = () => { fetchRecommendation(); fetchHourly(); fetchZones(); fetchEvents(); };
+
+  // Keep a ref to refreshAll so the ml-trained listener always calls the latest version
+  const refreshAllRef = useRef(refreshAll);
+  useEffect(() => { refreshAllRef.current = refreshAll; });
+
+  // Reload when a new dataset finishes training — also re-fetch zones (dataset may have new areas)
+  useEffect(() => {
+    const onTrained = async () => {
+      try {
+        const zones = await getDynamicZones();
+        setDynamicAreas(zones);
+        if (zones.length > 0) setSelectedArea(zones[0]);
+      } catch {}
+      refreshAllRef.current();
+    };
+    window.addEventListener("ml-trained", onTrained);
+    return () => window.removeEventListener("ml-trained", onTrained);
+  }, []);
 
   // ML-provided values (no user override)
   const mlBasePrice  = mlRec?.base_price ?? 65;

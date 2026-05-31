@@ -4,17 +4,18 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Home, Search, Bike, MapPin, Gift, TrendingUp,
-  User, Bell, Menu, X, ChevronRight, Zap, LogOut
+  Home, Bike, Gift, BookOpen,
+  User, Menu, X, ChevronRight, Zap, LogOut
 } from "lucide-react";
 import { getUser, signOut as authSignOut, type AuthUser } from "@/lib/auth";
 
 
 const navItems = [
-  { href:"/consumer/home",        label:"Home",          icon:Home },
+  { href:"/consumer/home",        label:"Home",           icon:Home },
+  { href:"/consumer/marketplace", label:"Browse Bikes",   icon:Bike },
+  { href:"/consumer/bookings",    label:"My Bookings",    icon:BookOpen },
   { href:"/consumer/predict",     label:"Price Predictor",icon:Zap },
-  { href:"/consumer/marketplace", label:"Bikes",         icon:Bike },
-  { href:"/consumer/loyalty",     label:"Rewards",       icon:Gift },
+  { href:"/consumer/loyalty",     label:"Rewards",        icon:Gift },
 ];
 
 export default function ConsumerLayout({ children }: { children: React.ReactNode }) {

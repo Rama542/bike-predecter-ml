@@ -142,7 +142,7 @@ async def best_time_to_rent(request: Request, area: str = "City Center"):
         day_buckets[day_names_map[dt.weekday()]].append(pt["demand"])
     day_avg = {d: sum(v) / len(v) for d, v in day_buckets.items()}
     best_day = min(day_avg, key=day_avg.get) if day_avg else "Tuesday"
-    cheapest_day = min(day_avg, key=day_avg.get) if day_avg else "Wednesday"
+    cheapest_day = best_day
 
     return {
         "success": True,

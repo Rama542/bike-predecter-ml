@@ -4,9 +4,9 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  LayoutDashboard, TrendingUp, DollarSign, Bike, Map, Users,
-  FileBarChart2, Settings, Menu, X, ChevronRight, Bell, Search,
-  Zap, User, LogOut, Shield
+  LayoutDashboard, TrendingUp, DollarSign, Bike, Users,
+  FileBarChart2, Settings, Menu, X, ChevronRight,
+  Zap, User, LogOut, Shield, Database
 } from "lucide-react";
 import { getUser, signOut as authSignOut, type AuthUser } from "@/lib/auth";
 
@@ -17,14 +17,14 @@ const DEVELOPER_EMAILS = [
 ];
 
 const navItems = [
-  { href:"/admin/dashboard",   label:"Dashboard",        icon:LayoutDashboard },
-  { href:"/admin/forecasting", label:"Forecasting",      icon:TrendingUp },
-  { href:"/admin/pricing",     label:"Pricing Engine",   icon:DollarSign },
-  { href:"/admin/fleet",       label:"Fleet",            icon:Bike },
-  { href:"/admin/map",         label:"City Map",         icon:Map },
+  { href:"/admin/dashboard",   label:"Dashboard",         icon:LayoutDashboard },
+  { href:"/admin/forecasting", label:"Forecasting",       icon:TrendingUp },
+  { href:"/admin/pricing",     label:"Pricing Engine",    icon:DollarSign },
+  { href:"/admin/fleet",       label:"Fleet",             icon:Bike },
   { href:"/admin/analytics",   label:"Customer Analytics",icon:Users },
-  { href:"/admin/reports",     label:"Reports",          icon:FileBarChart2 },
-  { href:"/admin/settings",    label:"Settings",         icon:Settings },
+  { href:"/admin/reports",     label:"Reports",           icon:FileBarChart2 },
+  { href:"/admin/dataset",     label:"Dataset & Training",icon:Database },
+  { href:"/admin/settings",    label:"Settings",          icon:Settings },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
