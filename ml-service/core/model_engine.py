@@ -315,65 +315,94 @@ class ModelEngine:
     # ─── Build Time Series ────────────────────────────────────────────────────
     def _build_ts(self):
         df = self.df
-        self.hourly_ts = (df.groupby("datetime").agg(cnt=("cnt","sum"),
-                          surge_multiplier=("surge_multiplier","mean")).asfreq("h").interpolate("linear"))
-        self.daily_ts  = (df.groupby("dteday").agg(cnt=("cnt","sum"),
-                          surge_multiplier=("surge_multiplier","mean")).asfreq("D").interpolate("linear"))
+        # Build hourly series — asfreq fills gaps with NaN; interpolate fills interior NaN;
+        # bfill/ffill fills edge NaN values that interpolate leaves; clip ensures non-negative.
+        self.hourly_ts = (
+            df.groupby("datetime").agg(cnt=("cnt","sum"), surge_multiplier=("surge_multiplier","mean"))
+            .asfreq("h")
+            .interpolate("linear")
+            .bfill()
+            .ffill()
+        )
+        self.hourly_ts["cnt"] = self.hourly_ts["cnt"].clip(lower=0)
+        self.hourly_ts["surge_multiplier"] = self.hourly_ts["surge_multiplier"].clip(lower=1.0, upper=1.25)
+
+        self.daily_ts = (
+            df.groupby("dteday").agg(cnt=("cnt","sum"), surge_multiplier=("surge_multiplier","mean"))
+            .asfreq("D")
+            .interpolate("linear")
+            .bfill()
+            .ffill()
+        )
+        self.daily_ts["cnt"] = self.daily_ts["cnt"].clip(lower=0)
+
         self.monthly_ts = (df.set_index("dteday").resample("ME").agg(
-                           cnt=("cnt","sum"),surge_multiplier=("surge_multiplier","mean")))
-        
+                           cnt=("cnt","sum"), surge_multiplier=("surge_multiplier","mean")))
+        # Fill any missing months (no interpolate — just carry forward/back)
+        self.monthly_ts = self.monthly_ts.bfill().ffill()
+        self.monthly_ts["cnt"] = self.monthly_ts["cnt"].clip(lower=0)
+
         # If the last month is incomplete (ends before the 27th), drop it so it doesn't
         # look like a demand crash to SARIMA — but only if at least 1 month would remain.
-        last_date = df["dteday"].max()
-        if last_date.day < last_date.days_in_month - 3 and len(self.monthly_ts) > 1:
+        last_date = pd.Timestamp(df["dteday"].max())
+        if hasattr(last_date, "days_in_month") and last_date.day < last_date.days_in_month - 3 and len(self.monthly_ts) > 1:
             self.monthly_ts = self.monthly_ts.iloc[:-1]
+
         # Cache surge thresholds once so compute_surge doesn't re-query pandas on every call
         self.p33 = float(self.hourly_ts["cnt"].quantile(0.33))
         self.p66 = float(self.hourly_ts["cnt"].quantile(0.66))
         self.p90 = float(self.hourly_ts["cnt"].quantile(0.90))
-        # Hourly profile for downscaling
-        self.hourly_profile      = df.groupby("hr")["cnt"].mean()
-        self.hourly_profile_norm = self.hourly_profile / self.hourly_profile.max()
+        # Hourly profile for downscaling — guard against all-zero counts
+        self.hourly_profile      = df.groupby("hr")["cnt"].mean().reindex(range(24), fill_value=1.0)
+        max_profile = self.hourly_profile.max()
+        self.hourly_profile_norm = self.hourly_profile / max_profile if max_profile > 0 else pd.Series([1.0]*24, index=range(24))
 
     # ─── Fit SARIMA Models ────────────────────────────────────────────────────
     def _fit_models(self):
+        def _safe_fit(series, order, seasonal_order=None, label="model"):
+            """Try primary order, fall back to simpler models if convergence fails."""
+            series = series.dropna().clip(lower=0)
+            if len(series) < 2:
+                raise ValueError(f"Not enough data points to fit {label} ({len(series)} rows after dropna)")
+            kwargs = dict(enforce_stationarity=False, enforce_invertibility=False)
+            try:
+                if seasonal_order:
+                    return SARIMAX(series, order=order, seasonal_order=seasonal_order, **kwargs).fit(disp=False)
+                return SARIMAX(series, order=order, **kwargs).fit(disp=False)
+            except Exception as e:
+                logger.warning(f"  {label} primary order failed ({e}), trying (1,1,1)...")
+            try:
+                return SARIMAX(series, order=(1,1,1), **kwargs).fit(disp=False)
+            except Exception as e:
+                logger.warning(f"  {label} (1,1,1) failed ({e}), using constant model...")
+            return SARIMAX(series, order=(0,0,0), **kwargs).fit(disp=False)
+
         logger.info("Fitting short-term SARIMA (hourly)...")
         train_h = self.hourly_ts["cnt"].iloc[-14*24:]
-        if len(train_h) < 48:
-            # Fewer than 2 seasonal periods — use simple non-seasonal ARIMA
-            self.fit_hourly = SARIMAX(train_h, order=(1,1,1),
-                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+        if len(train_h.dropna()) < 48:
+            self.fit_hourly = _safe_fit(train_h, (1,1,1), label="hourly")
         else:
-            self.fit_hourly = SARIMAX(train_h, order=ORDER_S, seasonal_order=SORDER_S,
-                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+            self.fit_hourly = _safe_fit(train_h, ORDER_S, SORDER_S, label="hourly")
         logger.info(f"  Hourly AIC={self.fit_hourly.aic:.1f}")
 
         logger.info("Fitting medium-term SARIMA (daily)...")
-        if len(self.daily_ts) < 3:
-            # Fewer than 3 days — constant model (mean forecast)
-            self.fit_daily = SARIMAX(self.daily_ts["cnt"], order=(0,0,0),
-                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
-        elif len(self.daily_ts) < 14:
-            # Fewer than 2 weekly cycles — fall back to simple ARIMA
-            self.fit_daily = SARIMAX(self.daily_ts["cnt"], order=(1,1,0),
-                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+        daily_clean = self.daily_ts["cnt"].dropna()
+        if len(daily_clean) < 3:
+            self.fit_daily = _safe_fit(self.daily_ts["cnt"], (0,0,0), label="daily")
+        elif len(daily_clean) < 14:
+            self.fit_daily = _safe_fit(self.daily_ts["cnt"], (1,1,0), label="daily")
         else:
-            self.fit_daily = SARIMAX(self.daily_ts["cnt"], order=ORDER_M, seasonal_order=SORDER_M,
-                                      enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+            self.fit_daily = _safe_fit(self.daily_ts["cnt"], ORDER_M, SORDER_M, label="daily")
         logger.info(f"  Daily  AIC={self.fit_daily.aic:.1f}")
 
         logger.info("Fitting long-term SARIMA (monthly)...")
-        if len(self.monthly_ts) < 3:
-            # Too few months — constant model, prevents indexing errors on 0-1 row series
-            self.fit_monthly = SARIMAX(self.monthly_ts["cnt"], order=(0,0,0),
-                                       enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
-        elif len(self.monthly_ts) < 24:
-            # Fallback to non-seasonal simple ARIMA for short datasets
-            self.fit_monthly = SARIMAX(self.monthly_ts["cnt"], order=(1,1,0),
-                                       enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+        monthly_clean = self.monthly_ts["cnt"].dropna()
+        if len(monthly_clean) < 3:
+            self.fit_monthly = _safe_fit(self.monthly_ts["cnt"], (0,0,0), label="monthly")
+        elif len(monthly_clean) < 24:
+            self.fit_monthly = _safe_fit(self.monthly_ts["cnt"], (1,1,0), label="monthly")
         else:
-            self.fit_monthly = SARIMAX(self.monthly_ts["cnt"], order=ORDER_L, seasonal_order=SORDER_L,
-                                       enforce_stationarity=False,enforce_invertibility=False).fit(disp=False)
+            self.fit_monthly = _safe_fit(self.monthly_ts["cnt"], ORDER_L, SORDER_L, label="monthly")
         logger.info(f"  Monthly AIC={self.fit_monthly.aic:.1f}")
 
     # ─── Pre-compute Forecasts ────────────────────────────────────────────────

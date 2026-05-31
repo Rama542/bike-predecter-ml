@@ -91,8 +91,18 @@ async def upload_dataset(request: Request, file: UploadFile = File(...)):
                 "plus a demand column (cnt/count/rides/demand/trips/rentals/usage)."
             )}
 
-        with open(DATA_PATH, "wb") as buffer:
-            buffer.write(contents)
+        # Try writing to DATA_PATH; fall back to /tmp if the primary path is read-only
+        import tempfile, shutil
+        try:
+            DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(DATA_PATH, "wb") as buffer:
+                buffer.write(contents)
+        except (OSError, PermissionError):
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+            tmp.write(contents)
+            tmp.flush()
+            tmp.close()
+            shutil.copy(tmp.name, str(DATA_PATH))
 
         # Clear any stale error from a previous failed training so polling
         # doesn't immediately fire the error branch on the first tick.
