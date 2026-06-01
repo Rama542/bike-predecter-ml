@@ -5,10 +5,30 @@
 
 ## 🌐 Live Demo
 
-**Frontend (Vercel):** https://frontend-nine-lyart-78.vercel.app
+| Service | URL | Status |
+|---|---|---|
+| **Frontend (Vercel)** | https://frontend-nine-lyart-78.vercel.app | ✅ Live |
+| **ML Backend (Render)** | Deploy below → then update `ML_API_URL` in Vercel | 🔧 Deploy needed |
 
-> Sign up with any email → choose **Admin** (fleet operator) or **Consumer** (rider) role.  
-> Demo accounts: `admin@bikesense.ai` / `Admin@1234` · `rider@bikesense.ai` / `Rider@1234` (create via Sign Up first)
+> **Sign up** with any email → choose **Admin** (fleet operator) or **Consumer** (rider) role.  
+> Without the ML backend, the site runs on **realistic demo data** automatically.
+
+---
+
+## 🚀 Deploy ML Backend to Render (One-Click)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Rama542/bike-predecter-ml)
+
+**Manual steps after clicking Deploy:**
+1. Click the button above → Log in / create a free Render account
+2. Render reads `render.yaml` and creates the `bikesense-ml-api` service automatically
+3. Wait ~3 minutes for the Docker build to finish
+4. Copy the service URL (e.g. `https://bikesense-ml-api.onrender.com`)
+5. Go to **Vercel Dashboard → Your Project → Settings → Environment Variables**
+6. Add `ML_API_URL = https://bikesense-ml-api.onrender.com`
+7. Redeploy the Vercel frontend
+
+> **Auto-deploy on push:** Once you add `RENDER_DEPLOY_HOOK_URL` as a GitHub secret, every push to `main` auto-deploys the ML service.
 
 ---
 

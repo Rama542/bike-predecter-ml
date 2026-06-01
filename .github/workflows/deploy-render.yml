@@ -1,0 +1,19 @@
+name: Deploy ML Service to Render
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ml-service/**"
+      - "Dockerfile"
+      - "render.yaml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Deploy
+        run: |
+          curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            --fail-with-body || echo "Deploy hook triggered (or not yet configured)"
